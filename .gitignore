@@ -1,7 +1,3 @@
-node_modules/
-client/dist/
-.env
 *.log
 .local-test-db/
-artifacts/
 .npm-cache/
