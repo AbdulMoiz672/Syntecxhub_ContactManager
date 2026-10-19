@@ -1,0 +1,15 @@
+{
+  "name": "gather-contact-manager",
+  "private": true,
+  "type": "module",
+  "workspaces": ["client"],
+  "scripts": {
+    "dev": "concurrently -k -n api,web \"npm run dev:server\" \"npm run dev --workspace client\"",
+    "dev:server": "node --watch --env-file=.env server/index.js",
+    "start": "node --env-file=.env server/index.js",
+    "build": "npm run build --workspace client",
+    "test": "node --test server/*.test.js"
+  },
+  "dependencies": {"cors": "^2.8.5", "express": "^5.1.0", "mongoose": "^8.19.0"},
+  "devDependencies": {"concurrently": "^9.2.1", "supertest": "^7.1.4"}
+}

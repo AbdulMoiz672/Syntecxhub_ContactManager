@@ -1,0 +1,60 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import mongoose from 'mongoose';
+import request from 'supertest';
+import { createApp } from './app.js';
+import { Contact } from './contact.js';
+import { User, Session } from './auth.js';
+
+test('MongoDB registration, sessions, login, logout and contact isolation', { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  await mongoose.connect(process.env.TEST_MONGODB_URI);
+  const tag = `integration-${Date.now()}`;
+  const email = `${tag}@example.com`;
+  const email2 = `${tag}-second@example.com`;
+  const app = createApp();
+  const first = request.agent(app), second = request.agent(app);
+  const password = 'A secure test password 123';
+  try {
+    await Promise.all([Contact.init(), User.init(), Session.init()]);
+    const invalid = await first.post('/api/auth/register').send({ name: 'Test', email, password: 'short' });
+    assert.equal(invalid.status, 400);
+    const registered = await first.post('/api/auth/register').send({ name: 'Test User', email: email.toUpperCase(), password });
+    assert.equal(registered.status, 201);
+    assert.equal(registered.body.user.email, email);
+    assert.equal(registered.body.user.passwordHash, undefined);
+    assert.match(registered.headers['set-cookie'][0], /HttpOnly/);
+    assert.match(registered.headers['set-cookie'][0], /SameSite=Strict/);
+    const stored = await User.findOne({ email }).select('+passwordHash');
+    assert.notEqual(stored.passwordHash, password);
+    assert.equal((await first.get('/api/auth/me')).body.user.name, 'Test User');
+    assert.equal((await request(app).post('/api/auth/register').send({ name: 'Duplicate', email, password })).status, 409);
+    const created = await first.post('/api/contacts').send({ firstName: 'Integration', email, group: 'Work' });
+    assert.equal(created.status, 201);
+    const id = created.body.contact._id;
+    assert.equal((await Contact.findById(id)).owner.toString(), stored.id);
+    assert.equal((await first.post('/api/contacts').send({ firstName: 'Duplicate', email })).status, 409);
+    assert.equal((await second.post('/api/auth/register').send({ name: 'Second', email: email2, password })).status, 201);
+    assert.equal((await second.get('/api/contacts')).body.contacts.length, 0);
+    assert.equal((await second.get(`/api/contacts/${id}`)).status, 404);
+    assert.equal((await second.put(`/api/contacts/${id}`).send({ firstName: 'Unauthorized', email })).status, 404);
+    assert.equal((await second.delete(`/api/contacts/${id}`)).status, 404);
+    assert.equal((await second.post('/api/contacts').send({ firstName: 'Same email, different owner', email })).status, 201);
+    assert.equal((await first.put(`/api/contacts/${id}`).send({ firstName: 'Updated', email, group: 'Family' })).status, 200);
+    assert.equal((await Contact.findById(id)).group, 'Family');
+    const oldCookie = registered.headers['set-cookie'][0].split(';')[0];
+    assert.equal((await first.post('/api/auth/logout')).status, 204);
+    assert.equal((await first.get('/api/contacts')).status, 401);
+    assert.equal((await request(app).get('/api/auth/me').set('Cookie', oldCookie)).status, 401);
+    assert.equal((await first.post('/api/auth/login').send({ email, password: 'wrong-password' })).status, 401);
+    assert.equal((await first.post('/api/auth/login').send({ email: email.toUpperCase(), password })).status, 200);
+    assert.equal((await first.delete(`/api/contacts/${id}`)).status, 204);
+    assert.equal(await Contact.findById(id), null);
+  } finally {
+    const users = await User.find({ email: { $in: [email, email2] } });
+    const userIds = users.map(user => user._id);
+    await Contact.deleteMany({ owner: { $in: userIds } });
+    await Session.deleteMany({ user: { $in: userIds } });
+    await User.deleteMany({ _id: { $in: userIds } });
+    await mongoose.disconnect();
+  }
+});
